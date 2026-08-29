@@ -1,0 +1,158 @@
+import json
+import os
+import requests
+from groq import Groq
+from flask import Flask, jsonify
+from dotenv import load_dotenv
+
+
+load_dotenv()
+
+NEWS_API_KEY = os.getenv("NEWS_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+client = Groq(api_key=GROQ_API_KEY)
+
+application = Flask(__name__)
+
+
+def fetch_news(country, category):
+
+    raw_list = []
+
+    if country == "" or category == "":
+        return "Missing Query Parameters. Add Country or Category Parameters."
+
+    url = "https://newsapi.org/v2/top-headlines"
+
+    params = {
+        "country": country,
+        "q": category,
+        "apiKey": NEWS_API_KEY
+    }
+
+    response = requests.get(url, params=params)
+
+    if response.status_code == 200:
+
+        news_data = response.json()
+
+        if len(news_data["articles"]) > 0:
+
+            for article in news_data["articles"]:
+
+                new_dict = article.copy()
+
+                new_dict.pop("source", None)
+                new_dict.pop("url", None)
+                new_dict.pop("urlToImage", None)
+                new_dict.pop("publishedAt", None)
+                new_dict.pop("content", None)
+
+                raw_list.append(new_dict)
+
+            return raw_list
+
+        else:
+            return "No Data Found in these Query Parameters."
+
+    else:
+        return "Invalid Query Parameter. Add Proper Country or Category Query Parameters."
+
+
+def transform_news_to_humor(news_list):
+
+    length = len(news_list)
+
+    for i in range(0, length):
+
+        try:
+
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Description of news headline: "
+                            f"{news_list[i]['description']} "
+                            f"Create a very short humorous description "
+                            f"with emojis."
+                        )
+                    }
+                ],
+                temperature=1,
+                max_tokens=75,
+                stream=True
+            )
+
+            response_received = False
+            end_response = ""
+
+            for part in response:
+
+                if part.choices[0].delta.content:
+
+                    chunked_response = part.choices[0].delta.content
+                    end_response += chunked_response
+                    response_received = True
+
+            news_list[i]["humorous_description"] = end_response
+
+            if not response_received:
+                print("No response from Groq.")
+
+        except Exception as e:
+            print(f"Following is the Error: {e}")
+
+    return news_list
+
+
+@application.route("/", methods=["GET"])
+def home():
+
+    return jsonify({
+        "message": "Get Humorous Version of News",
+        "usage": "/country/category"
+    })
+
+
+@application.errorhandler(404)
+def page_not_found(error):
+
+    return jsonify({
+        "error": str(error),
+        "code": 404,
+        "message": "Use format: /country/category"
+    }), 404
+
+
+@application.route("/<cntry>/<ctgry>", methods=["GET"])
+def news_provider(cntry, ctgry):
+
+    raw_list = fetch_news(cntry, ctgry)
+
+    if isinstance(raw_list, str):
+        return jsonify({
+            "status": "error",
+            "message": raw_list
+        }), 400
+
+    required_list = transform_news_to_humor(raw_list)
+
+    with open("Humourous_Data.json", "w", encoding="utf-8") as f:
+        json.dump(required_list, f, indent=4, ensure_ascii=False)
+
+    return jsonify({
+        "status": "success",
+        "data": required_list
+    })
+
+
+if __name__ == "__main__":
+    application.run(
+        host="localhost",
+        debug=True,
+        port=5000
+    )
+
